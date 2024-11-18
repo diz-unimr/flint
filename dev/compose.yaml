@@ -1,0 +1,72 @@
+version: "3.7"
+
+services:
+
+  zoo:
+    image: zookeeper:3.9.2
+    restart: unless-stopped
+    ports:
+      - "2181:2181"
+    environment:
+      ZOO_MY_ID: 1
+      ZOO_PORT: 2181
+      ZOO_SERVERS: server.1=zoo:2888:3888;2181
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_ADVERTISED_LISTENERS: LISTENER_DOCKER_INTERNAL://kafka:19092,LISTENER_DOCKER_EXTERNAL://172.17.0.1:9093,LISTENER_EXTERNAL://127.0.0.1:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: LISTENER_DOCKER_INTERNAL:PLAINTEXT,LISTENER_DOCKER_EXTERNAL:PLAINTEXT,LISTENER_EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: LISTENER_DOCKER_INTERNAL
+      KAFKA_ZOOKEEPER_CONNECT: zoo:2181
+      KAFKA_BROKER_ID: 1
+      KAFKA_LOG4J_LOGGERS: kafka.controller=INFO,kafka.producer.async.DefaultEventHandler=INFO,state.change.logger=INFO
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_MESSAGE_MAX_BYTES: 5242880
+      KAFKA_REPLICA_FETCH_MAX_BYTES: 5242880
+      KAFKA_COMPRESSION_TYPE: gzip
+    depends_on:
+      - zoo
+    healthcheck:
+      test: kafka-topics --bootstrap-server kafka:9092 --list
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  akhq:
+    image: tchiotludo/akhq:0.25.0
+    environment:
+      AKHQ_CONFIGURATION: |
+        akhq:
+          ui-options:
+            topic.show-all-consumer-groups: true
+            topic-data.sort: NEWEST
+          connections:
+            docker-kafka-server:
+              properties:
+                bootstrap.servers: "kafka:19092"
+    ports:
+      - "9000:8080"
+    depends_on:
+      - kafka
+
+  fhir-data-loader:
+    image: confluentinc/cp-kafkacat:7.1.12
+    entrypoint: [ "/bin/bash", "-c" ]
+    command: >
+      "while true; do
+        kafkacat -b kafka:19092 -K: -t person-fhir -P -l /data/person-data.ndjson;
+        kafkacat -b kafka:19092 -K: -t lab-fhir -P -l /data/lab-data.ndjson;
+        sleep 10;
+      done"
+    #    command: >
+    #      "kafkacat -b kafka:19092 -K: -t person-fhir -P -l /data/person-data.ndjson &&
+    #      kafkacat -b kafka:19092 -K: -t lab-fhir -P -l /data/lab-data.ndjson"
+    volumes:
+      - ./person-data.ndjson:/data/person-data.ndjson:ro
+      - ./lab-data.ndjson:/data/lab-data.ndjson:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
