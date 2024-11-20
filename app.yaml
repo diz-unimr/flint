@@ -1,0 +1,27 @@
+app:
+  name: kafka_rust
+  log_level: info
+
+kafka:
+  brokers: localhost:9092
+  security_protocol: plaintext
+  ssl:
+    ca_location: /app/cert/kafka_ca.pem
+    certificate_location: /app/cert/app_cert.pem
+    key_location: /app/cert/app_key.pem
+    key_password:
+  input_topics: test-fhir
+  offset_reset: earliest
+
+fhir:
+  server:
+    base_url: http://localhost:8080/fhir
+    auth:
+      basic:
+        user:
+        password:
+  retry:
+    count: 10
+    timeout: 10
+    wait: 5
+    max_wait: 20
