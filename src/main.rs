@@ -99,7 +99,7 @@ fn create_consumer(config: Kafka) -> StreamConsumer {
         .set("session.timeout.ms", "6000")
         .set("enable.auto.commit", "true")
         .set("enable.auto.offset.store", "false")
-        .set("auto.offset.reset", "earliest")
+        .set("auto.offset.reset", config.offset_reset)
         .set_log_level(RDKafkaLogLevel::Debug);
 
     if let Some(ssl) = config.ssl {

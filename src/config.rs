@@ -2,13 +2,11 @@ use config::{Config, ConfigError, Environment, File};
 use serde_derive::Deserialize;
 
 #[derive(Debug, Deserialize, Clone)]
-#[allow(unused)]
 pub(crate) struct App {
     pub(crate) log_level: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[allow(unused)]
 pub(crate) struct Kafka {
     pub(crate) brokers: String,
     pub(crate) security_protocol: String,
@@ -19,7 +17,6 @@ pub(crate) struct Kafka {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[allow(unused)]
 pub(crate) struct Ssl {
     pub(crate) ca_location: Option<String>,
     pub(crate) certificate_location: Option<String>,
@@ -28,34 +25,29 @@ pub(crate) struct Ssl {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[allow(unused)]
 pub(crate) struct Fhir {
     pub(crate) server: Server,
     pub(crate) retry: Retry,
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[allow(unused)]
 pub(crate) struct Server {
     pub(crate) base_url: String,
     pub(crate) auth: Option<Auth>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[allow(unused)]
 pub(crate) struct Auth {
     pub(crate) basic: Option<Basic>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[allow(unused)]
 pub(crate) struct Basic {
     pub(crate) user: Option<String>,
     pub(crate) password: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[allow(unused)]
 pub(crate) struct Retry {
     pub(crate) count: u32,
     pub(crate) timeout: u64,
@@ -64,7 +56,6 @@ pub(crate) struct Retry {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[allow(unused)]
 pub(crate) struct AppConfig {
     pub(crate) app: App,
     pub(crate) kafka: Kafka,
@@ -79,7 +70,7 @@ impl AppConfig {
             )
 
             // override values from environment variables
-            .add_source(Environment::with_prefix("APP")
+            .add_source(Environment::with_prefix("FLINT")
                 .separator("__"))
             .build()?.try_deserialize()
     }
