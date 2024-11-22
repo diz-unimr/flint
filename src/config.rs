@@ -1,75 +1,74 @@
 use config::{Config, ConfigError, Environment, File};
-use derive_getters::Getters;
 use serde_derive::Deserialize;
 
-#[derive(Getters, Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 #[allow(unused)]
 pub(crate) struct App {
-    log_level: String,
+    pub(crate) log_level: String,
 }
 
-#[derive(Getters, Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 #[allow(unused)]
 pub(crate) struct Kafka {
-    brokers: String,
-    security_protocol: String,
-    ssl: Option<Ssl>,
-    consumer_group: String,
-    input_topics: String,
-    offset_reset: String,
+    pub(crate) brokers: String,
+    pub(crate) security_protocol: String,
+    pub(crate) ssl: Option<Ssl>,
+    pub(crate) consumer_group: String,
+    pub(crate) input_topics: String,
+    pub(crate) offset_reset: String,
 }
 
-#[derive(Getters, Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 #[allow(unused)]
 pub(crate) struct Ssl {
-    ca_location: Option<String>,
-    certificate_location: Option<String>,
-    key_location: Option<String>,
-    key_password: Option<String>,
+    pub(crate) ca_location: Option<String>,
+    pub(crate) certificate_location: Option<String>,
+    pub(crate) key_location: Option<String>,
+    pub(crate) key_password: Option<String>,
 }
 
-#[derive(Getters, Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 #[allow(unused)]
 pub(crate) struct Fhir {
-    server: Server,
-    retry: Retry,
+    pub(crate) server: Server,
+    pub(crate) retry: Retry,
 }
 
-#[derive(Getters, Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 #[allow(unused)]
 pub(crate) struct Server {
-    base_url: String,
-    auth: Option<Auth>,
+    pub(crate) base_url: String,
+    pub(crate) auth: Option<Auth>,
 }
 
-#[derive(Getters, Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 #[allow(unused)]
 pub(crate) struct Auth {
-    basic: Option<Basic>,
+    pub(crate) basic: Option<Basic>,
 }
 
-#[derive(Getters, Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 #[allow(unused)]
 pub(crate) struct Basic {
-    user: Option<String>,
-    password: Option<String>,
+    pub(crate) user: Option<String>,
+    pub(crate) password: Option<String>,
 }
 
-#[derive(Getters, Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 #[allow(unused)]
 pub(crate) struct Retry {
-    count: u32,
-    timeout: u32,
-    wait: u32,
-    max_wait: u32,
+    pub(crate) count: u32,
+    pub(crate) timeout: u64,
+    pub(crate) wait: u64,
+    pub(crate) max_wait: u64,
 }
 
-#[derive(Getters, Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 #[allow(unused)]
 pub(crate) struct AppConfig {
-    app: App,
-    kafka: Kafka,
-    fhir: Fhir,
+    pub(crate) app: App,
+    pub(crate) kafka: Kafka,
+    pub(crate) fhir: Fhir,
 }
 
 impl AppConfig {

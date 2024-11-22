@@ -6,19 +6,17 @@ use crate::fhir_client::FhirClient;
 use config::AppConfig;
 use futures::stream::FuturesUnordered;
 use futures::{StreamExt, TryStreamExt};
-use log::{error, info, warn};
+use log::{debug, error, info};
 use rdkafka::config::RDKafkaLogLevel;
-use rdkafka::consumer::{CommitMode, Consumer, StreamConsumer};
-use rdkafka::message::{BorrowedMessage, Headers, Message, OwnedMessage};
+use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::message::{BorrowedMessage, Headers, Message};
 use rdkafka::ClientConfig;
-use reqwest::{header, Client};
-use std::collections::HashMap;
 use std::env;
 use std::sync::Arc;
 
 async fn run(config: AppConfig, topic: String, client: FhirClient) {
     // create consumer
-    let consumer: StreamConsumer = create_consumer(&config.kafka());
+    let consumer: StreamConsumer = create_consumer(config.kafka);
     match consumer
         .subscribe(&[&topic]) {
         Ok(_) => { info!("Successfully subscribed to topic: {:?}", topic); }
@@ -32,11 +30,11 @@ async fn run(config: AppConfig, topic: String, client: FhirClient) {
 
         async move {
             let (key, payload) = deserialize_message(&m);
-            info!("key: '{}', payload: '{}', topic: {}, partition: {}, offset: {}, timestamp: {:?}",
+            debug!("key: '{}', payload: '{}', topic: {}, partition: {}, offset: {}, timestamp: {:?}",
                     key,payload, m.topic(), m.partition(), m.offset(), m.timestamp());
             if let Some(headers) = m.headers() {
                 for header in headers.iter() {
-                    info!("Header {:#?}: {:?}", header.key, header.value);
+                    debug!("Header {:#?}: {:?}", header.key, header.value);
                 }
             }
 
@@ -70,15 +68,15 @@ async fn main() {
         Ok(s) => s,
         Err(e) => panic!("Failed to parse app settings: {e:?}"),
     };
-    env::set_var("RUST_LOG", config.app().log_level());
+    env::set_var("RUST_LOG", config.app.log_level.clone());
     env_logger::init();
 
-    let client = match FhirClient::new(&config) {
+    let client = match FhirClient::new(&config).await {
         Ok(c) => c,
         Err(e) => panic!("Failed create HTTP FHIR client: {e:?}"),
     };
 
-    let topics = config.kafka().input_topics().split(',').map(String::from).collect::<Vec<String>>();
+    let topics = config.kafka.input_topics.split(',').map(String::from).collect::<Vec<String>>();
     topics.iter()
         .map(|t| {
             tokio::spawn(run(
@@ -92,29 +90,29 @@ async fn main() {
         .await
 }
 
-fn create_consumer(config: &Kafka) -> StreamConsumer {
+fn create_consumer(config: Kafka) -> StreamConsumer {
     let mut c = ClientConfig::new();
-    c.set("bootstrap.servers", config.brokers())
-        .set("security.protocol", config.security_protocol())
+    c.set("bootstrap.servers", config.brokers)
+        .set("security.protocol", config.security_protocol)
         .set("enable.partition.eof", "false")
-        .set("group.id", config.consumer_group())
+        .set("group.id", config.consumer_group)
         .set("session.timeout.ms", "6000")
         .set("enable.auto.commit", "true")
         .set("enable.auto.offset.store", "false")
         .set("auto.offset.reset", "earliest")
         .set_log_level(RDKafkaLogLevel::Debug);
 
-    if let Some(ssl) = config.ssl() {
-        if let Some(value) = ssl.ca_location() {
+    if let Some(ssl) = config.ssl {
+        if let Some(value) = ssl.ca_location {
             c.set("ssl.ca.location", value);
         }
-        if let Some(value) = ssl.key_location() {
+        if let Some(value) = ssl.key_location {
             c.set("ssl.key.location", value);
         }
-        if let Some(value) = ssl.certificate_location() {
+        if let Some(value) = ssl.certificate_location {
             c.set("ssl.certificate.location", value);
         }
-        if let Some(value) = ssl.key_password() {
+        if let Some(value) = ssl.key_password {
             c.set("ssl.key.password", value);
         }
     }
