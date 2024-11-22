@@ -5,7 +5,6 @@ use serde_derive::Deserialize;
 #[derive(Getters, Debug, Deserialize, Clone)]
 #[allow(unused)]
 pub(crate) struct App {
-    name: String,
     log_level: String,
 }
 
@@ -15,6 +14,7 @@ pub(crate) struct Kafka {
     brokers: String,
     security_protocol: String,
     ssl: Option<Ssl>,
+    consumer_group: String,
     input_topics: String,
     offset_reset: String,
 }

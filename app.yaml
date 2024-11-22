@@ -1,5 +1,4 @@
 app:
-  name: kafka_rust
   log_level: info
 
 kafka:
@@ -10,6 +9,7 @@ kafka:
     certificate_location: /app/cert/app_cert.pem
     key_location: /app/cert/app_key.pem
     key_password:
+  consumer_group: fhir-to-server
   input_topics: test-fhir
   offset_reset: earliest
 

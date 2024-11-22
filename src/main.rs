@@ -18,13 +18,15 @@ use std::sync::Arc;
 
 async fn run(config: AppConfig, topic: String, client: FhirClient) {
     // create consumer
-    let consumer: StreamConsumer = create_consumer(&config.kafka(), config.app().name());
-    consumer
-        .subscribe(&[&topic])
-        .expect("Can't subscribe to specified topics");
+    let consumer: StreamConsumer = create_consumer(&config.kafka());
+    match consumer
+        .subscribe(&[&topic]) {
+        Ok(_) => { info!("Successfully subscribed to topic: {:?}", topic); }
+        Err(error) => error!("Failed to subscribe to specified topic: {}", error),
+    }
     let consumer = Arc::new(consumer);
 
-    let stream_processor = consumer.stream().try_for_each(|m| {
+    let stream = consumer.stream().try_for_each(|m| {
         let consumer = consumer.clone();
         let client = client.clone();
 
@@ -58,20 +60,18 @@ async fn run(config: AppConfig, topic: String, client: FhirClient) {
     });
 
     info!("Starting consumers");
-    stream_processor.await.expect("stream processing failed");
+    stream.await.expect("stream processing failed");
     info!("Processing terminated");
 }
 
 #[tokio::main]
 async fn main() {
-    // TODO
-    env::set_var("RUST_LOG", "info");
-    env_logger::init();
-
     let config = match AppConfig::new() {
         Ok(s) => s,
         Err(e) => panic!("Failed to parse app settings: {e:?}"),
     };
+    env::set_var("RUST_LOG", config.app().log_level());
+    env_logger::init();
 
     let client = match FhirClient::new(&config) {
         Ok(c) => c,
@@ -92,12 +92,12 @@ async fn main() {
         .await
 }
 
-fn create_consumer(config: &Kafka, group_id: &str) -> StreamConsumer {
+fn create_consumer(config: &Kafka) -> StreamConsumer {
     let mut c = ClientConfig::new();
     c.set("bootstrap.servers", config.brokers())
         .set("security.protocol", config.security_protocol())
         .set("enable.partition.eof", "false")
-        .set("group.id", &*group_id)
+        .set("group.id", config.consumer_group())
         .set("session.timeout.ms", "6000")
         .set("enable.auto.commit", "true")
         .set("enable.auto.offset.store", "false")
