@@ -42,7 +42,7 @@ async fn run(config: AppConfig, topic: String, client: FhirClient) {
             match res {
                 Ok(b) => {
                     if b.status().is_success() {
-                        info!("Response indicates success: {}", b.text().await.unwrap());
+                        debug!("Response indicates success: {}", b.text().await.unwrap());
                     } else {
                         error!("Error response: {}", b.status());
                     }

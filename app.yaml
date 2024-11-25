@@ -9,7 +9,7 @@ kafka:
     certificate_location: /app/cert/app_cert.pem
     key_location: /app/cert/app_key.pem
     key_password:
-  consumer_group: fhir-to-server
+  consumer_group: fhir-to-diz
   input_topics: test-fhir
   offset_reset: earliest
 
