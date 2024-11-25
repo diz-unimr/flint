@@ -1,5 +1,11 @@
 # flint
 
+[![MegaLinter](https://github.com/diz-unimr/flint/actions/workflows/mega-linter.yml/badge.svg)](https://github.com/diz-unimr/flint/actions/workflows/mega-linter.yml)
+[![build](https://github.com/diz-unimr/flint/actions/workflows/build.yaml/badge.svg)](https://github.com/diz-unimr/flint/actions/workflows/build.yaml)
+[![docker](https://github.com/diz-unimr/flint/actions/workflows/release.yaml/badge.svg)](https://github.com/diz-unimr/flint/actions/workflows/release.yaml)
+[![codecov](https://codecov.io/gh/diz-unimr/flint/graph/badge.svg?token=ClPe13QC4b)](https://codecov.io/gh/diz-unimr/flint)
+
+
 > Send FHIR 🔥 data from Kafka to a server
 
 ## Concurrency
