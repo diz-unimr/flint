@@ -3,6 +3,6 @@ REPOSITORY_TRIVY_ARGUMENTS: --severity HIGH,CRITICAL
 DISABLE_LINTERS:
   - MARKDOWN_MARKDOWN_LINK_CHECK
 PRE_COMMANDS:
-  - command: "apk add openssl-dev"
+  - command: "apk add openssl-dev cmake"
     cwd: "root"
 
