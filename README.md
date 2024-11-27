@@ -1,4 +1,4 @@
-# flint
+# flint 💥
 
 [![MegaLinter](https://github.com/diz-unimr/flint/actions/workflows/mega-linter.yml/badge.svg)](https://github.com/diz-unimr/flint/actions/workflows/mega-linter.yml)
 [![build](https://github.com/diz-unimr/flint/actions/workflows/build.yaml/badge.svg)](https://github.com/diz-unimr/flint/actions/workflows/build.yaml)
