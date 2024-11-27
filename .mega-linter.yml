@@ -3,5 +3,5 @@ REPOSITORY_TRIVY_ARGUMENTS: --severity HIGH,CRITICAL
 DISABLE_LINTERS:
   - MARKDOWN_MARKDOWN_LINK_CHECK
 PRE_COMMANDS:
-  - command: "apk add openssl-dev cmake cpp g++"
+  - command: "apk add openssl-dev openssl-libs-static cmake gcc g++"
     cwd: "root"
