@@ -1,5 +1,4 @@
 services:
-
   kafka:
     image: apache/kafka:3.9.0
     ports:
@@ -46,7 +45,7 @@ services:
 
   fhir-data-loader:
     image: confluentinc/cp-kafkacat:7.1.12
-    entrypoint: [ "/bin/bash", "-c" ]
+    entrypoint: ["/bin/bash", "-c"]
     command: >
       "while true; do
         kafkacat -b kafka:19092 -K: -t person-fhir -P -l /data/person-data.ndjson;
@@ -72,4 +71,3 @@ services:
       ENFORCE_REFERENTIAL_INTEGRITY: "false"
     ports:
       - "8080:8080"
-
