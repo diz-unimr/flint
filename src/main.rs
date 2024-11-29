@@ -17,45 +17,70 @@ use std::sync::Arc;
 async fn run(config: AppConfig, topic: String, client: FhirClient) {
     // create consumer
     let consumer: StreamConsumer = create_consumer(config.kafka);
-    match consumer
-        .subscribe(&[&topic]) {
-        Ok(_) => { info!("Successfully subscribed to topic: {:?}", topic); }
+    match consumer.subscribe(&[&topic]) {
+        Ok(_) => {
+            info!("Successfully subscribed to topic: {:?}", topic);
+        }
         Err(error) => error!("Failed to subscribe to specified topic: {}", error),
     }
     let consumer = Arc::new(consumer);
 
-    let stream = consumer.stream().try_for_each(|m| {
-        let consumer = consumer.clone();
-        let client = client.clone();
+    let stream = consumer
+        .stream()
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+        .try_for_each(|m| {
+            let consumer = consumer.clone();
+            let client = client.clone();
 
-        async move {
-            let (key, payload) = deserialize_message(&m);
-            debug!("key: '{}', payload: '{}', topic: {}, partition: {}, offset: {}, timestamp: {:?}",
-                    key,payload, m.topic(), m.partition(), m.offset(), m.timestamp());
-            if let Some(headers) = m.headers() {
-                for header in headers.iter() {
-                    debug!("Header {:#?}: {:?}", header.key, header.value);
-                }
-            }
+            {
+                let topic = topic.clone();
+                async move {
+                    let (key, payload) = deserialize_message(&m);
 
-            let res = client.send(&payload).await;
-            match res {
-                Ok(b) => {
-                    if b.status().is_success() {
-                        debug!("Response indicates success: {}", b.text().await.unwrap());
-                    } else {
-                        error!("Error response: {}", b.status());
+                    debug!("key: '{}', payload: '{}', topic: {}, partition: {}, offset: {}, timestamp: {:?}",
+                        key,payload.as_deref().unwrap_or("[null]"),m.topic(),m.partition(),m.offset(),m.timestamp());
+
+                    if let Some(headers) = m.headers() {
+                        for header in headers.iter() {
+                            debug!("Header {:#?}: {:?}", header.key, header.value);
+                        }
+                    }
+
+                    // filter tombstone records
+                    if payload.is_none() {
+                        return Ok(())
+                    }
+
+
+                    // send payload to FHIR server
+                    let res = client.send(&payload.unwrap()).await;
+                    match res {
+                        Ok(b) => {
+                            if b.status().is_success() {
+                                debug!("Response indicates success: {}", b.text().await.unwrap());
+
+                                // store offset
+                                consumer
+                                    .store_offset_from_message(&m)
+                                    .expect("Failed to store offset for message");
+                                Ok(())
+                            } else {
+                                error!("Error response: {}", b.status());
+                                // stop processing
+                                consumer.unsubscribe();
+                                Err(format!("Failed to send payload to the FHIR server (status: {}). Stopping consumer for {}", b.status(), topic).into())
+                            }
+                        }
+                        Err(e) => {
+                            // stop processing
+                            error!("Got an error: {}", e);
+                            consumer.unsubscribe();
+                            Err(Box::new(e) as Box<dyn std::error::Error>)
+                        }
                     }
                 }
-                Err(e) => // TODO skip processing
-                    error!("Got an error: {}", e),
             }
-
-            consumer.store_offset_from_message(&m).expect("Failed to store offset for message");
-
-            Ok(())
-        }
-    });
+        });
 
     info!("Starting consumers");
     stream.await.expect("stream processing failed");
@@ -76,15 +101,15 @@ async fn main() {
         Err(e) => panic!("Failed create HTTP FHIR client: {e:?}"),
     };
 
-    let topics = config.kafka.input_topics.split(',').map(String::from).collect::<Vec<String>>();
-    topics.iter()
-        .map(|t| {
-            tokio::spawn(run(
-                config.clone(),
-                t.clone(),
-                client.clone(),
-            ))
-        })
+    let topics = config
+        .kafka
+        .input_topics
+        .split(',')
+        .map(String::from)
+        .collect::<Vec<String>>();
+    topics
+        .iter()
+        .map(|t| tokio::spawn(run(config.clone(), t.clone(), client.clone())))
         .collect::<FuturesUnordered<_>>()
         .for_each(|_| async { () })
         .await
@@ -117,11 +142,10 @@ fn create_consumer(config: Kafka) -> StreamConsumer {
         }
     }
 
-    c.create()
-        .expect("Failed to create Kafka consumer")
+    c.create().expect("Failed to create Kafka consumer")
 }
 
-fn deserialize_message(m: &BorrowedMessage) -> (String, String) {
+fn deserialize_message(m: &BorrowedMessage) -> (String, Option<String>) {
     let key = match m.key_view::<str>() {
         None => "",
         Some(Ok(k)) => k,
@@ -131,13 +155,13 @@ fn deserialize_message(m: &BorrowedMessage) -> (String, String) {
         }
     };
     let payload = match m.payload_view::<str>() {
-        None => "",
-        Some(Ok(s)) => s,
+        None => None,
+        Some(Ok(s)) => Some(s),
         Some(Err(e)) => {
             error!("Error while deserializing message payload: {:?}", e);
-            ""
+            None
         }
     };
 
-    (key.to_owned(), payload.to_owned())
+    (key.to_owned(), payload.map(str::to_string).to_owned())
 }
