@@ -83,8 +83,8 @@ async fn run(config: AppConfig, topic: String, client: FhirClient) {
         });
 
     info!("Starting consumers");
-    stream.await.expect("stream processing failed");
-    info!("Processing terminated");
+    let error = stream.await;
+    info!("Consumers terminated: {:?}", error);
 }
 
 #[tokio::main]
@@ -164,4 +164,98 @@ fn deserialize_message(m: &BorrowedMessage) -> (String, Option<String>) {
     };
 
     (key.to_owned(), payload.map(str::to_string).to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::fhir_client::tests::setup_config;
+    use crate::fhir_client::FhirClient;
+    use crate::run;
+    use httpmock::Method::{GET, POST};
+    use httpmock::MockServer;
+    use rdkafka::mocking::MockCluster;
+    use rdkafka::producer::future_producer::OwnedDeliveryResult;
+    use rdkafka::producer::{FutureProducer, FutureRecord};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[tokio::test]
+    async fn test_run() {
+        const TOPIC: &str = "test_topic";
+
+        // create mock cluster
+        let mock_cluster = MockCluster::new(3).unwrap();
+        mock_cluster
+            .create_topic(TOPIC, 3, 3)
+            .expect("Failed to create topic");
+
+        let mock_producer: FutureProducer = rdkafka::ClientConfig::new()
+            .set("bootstrap.servers", mock_cluster.bootstrap_servers())
+            .create()
+            .expect("Producer creation error");
+
+        send_record(mock_producer.clone(), TOPIC, "test")
+            .await
+            .unwrap();
+        send_record(mock_producer.clone(), TOPIC, "done")
+            .await
+            .unwrap();
+
+        // create mock fhir server
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/metadata");
+            then.status(200).body("OK");
+        });
+        let post_mock = server.mock(|when, then| {
+            when.method(POST).path("/").body("test");
+            then.status(200).body("OK");
+        });
+        let done = server.mock(|when, then| {
+            when.method(POST).path("/").body("done");
+            then.status(500).body("done");
+        });
+        // setup config
+        let mut config = setup_config(server.base_url());
+        config.kafka.brokers = mock_cluster.bootstrap_servers();
+        config.kafka.offset_reset = String::from("earliest");
+        config.kafka.security_protocol = String::from("plaintext");
+        config.kafka.consumer_group = String::from("test");
+
+        // create new client
+        let client = FhirClient::new(&config).await.unwrap();
+
+        // run
+        run(config, TOPIC.to_string(), client.clone()).await;
+
+        // mock was called once
+        post_mock.assert();
+        done.assert();
+
+        // assert client is created
+        // assert!(client.is_ok());
+    }
+
+    async fn send_record(
+        producer: FutureProducer,
+        topic: &str,
+        payload: &str,
+    ) -> OwnedDeliveryResult {
+        producer
+            .send_result(
+                FutureRecord::to(topic)
+                    .key("test")
+                    .payload(payload)
+                    .timestamp(
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis()
+                            .try_into()
+                            .unwrap(),
+                    ),
+            )
+            .unwrap()
+            .await
+            .unwrap()
+    }
 }

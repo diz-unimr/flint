@@ -92,7 +92,7 @@ impl FhirClient {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use crate::config::{App, AppConfig, Fhir, Kafka, Retry, Server};
     use crate::fhir_client::FhirClient;
 
@@ -100,7 +100,7 @@ mod tests {
         let _ = env_logger::builder().is_test(true).try_init();
     }
 
-    fn setup_config(base_url: String) -> AppConfig {
+    pub(crate) fn setup_config(base_url: String) -> AppConfig {
         AppConfig {
             app: App::default(),
             kafka: Kafka::default(),
@@ -128,8 +128,8 @@ mod tests {
             then.status(200).body("OK");
         });
 
-        let mut config = setup_config(server.base_url());
-        config.fhir.server.base_url = server.base_url();
+        let config = setup_config(server.base_url());
+        // config.fhir.server.base_url = server.base_url();
         // create new client
         let client = FhirClient::new(&config).await;
 
