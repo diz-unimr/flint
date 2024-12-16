@@ -55,8 +55,7 @@ Application properties are read from a properties file ([app.yaml](./app.yaml)) 
 
 ### Environment variables
 
-Override configuration properties by providing environment variables with their respective names in uppercase POSIX
-style with a `FLINT__` prefix. Replace dots (`.`) with **double underscores**  (`__`) to separate properties.
+Override configuration properties by providing environment variables with their respective property names.
 
 ## License
 
