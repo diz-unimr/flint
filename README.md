@@ -46,8 +46,8 @@ Application properties are read from a properties file ([app.yaml](./app.yaml)) 
 | `kafka.input_topics`              |                              | Kafka topics to consume (comma separated)     |
 | `kafka.offset_reset`              | earliest                     | Kafka consumer reset (`earliest` or `latest`) |
 | `fhir.server.base_url`            | <http://localhost:8080/fhir> | FHIR server base URL                          |
-| `fhir.server.basic.auth.user`     |                              | FHIR server BasicAuth username                |
-| `fhir.server.basic.auth.password` |                              | FHIR server BasicAuth password                |
+| `fhir.server.auth.basic.user`     |                              | FHIR server BasicAuth username                |
+| `fhir.server.auth.basic.password` |                              | FHIR server BasicAuth password                |
 | `fhir.retry.count`                | 10                           | Retry count                                   |
 | `fhir.retry.timeout`              | 10                           | Retry timeout                                 |
 | `fhir.retry.wait`                 | 5                            | Retry wait between retries                    |
