@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rdkafka = { version = "0.36.2", features = ["ssl", "cmake-build"] }
+rdkafka = { version = "0.37.0", features = ["ssl", "cmake-build"] }
 tokio = { version = "1.41.1", features = ["full"] }
 log = "0.4.22"
 env_logger = "0.11.5"
