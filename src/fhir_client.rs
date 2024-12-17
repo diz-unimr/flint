@@ -1,4 +1,4 @@
-use crate::config::{AppConfig, Fhir};
+use crate::config::AppConfig;
 use log::{debug, error, info};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::{header, Client, Response};
@@ -101,7 +101,7 @@ fn create_auth_header(user: String, password: Option<String>) -> HeaderValue {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::config::{App, AppConfig, Fhir, Kafka, Retry, Server};
+    use crate::config::{App, AppConfig, Auth, Basic, Fhir, Kafka, Retry, Server};
     use crate::fhir_client::FhirClient;
 
     fn init() {
@@ -115,7 +115,12 @@ pub(crate) mod tests {
             fhir: Fhir {
                 server: Server {
                     base_url,
-                    auth: None,
+                    auth: Some(Auth {
+                        basic: Some(Basic {
+                            user: Some(String::from("foo")),
+                            password: Some(String::from("bar")),
+                        }),
+                    }),
                 },
                 retry: Retry {
                     timeout: 5,
@@ -132,7 +137,9 @@ pub(crate) mod tests {
         init();
         let server = MockServer::start();
         let metadata_mock = server.mock(|when, then| {
-            when.method(GET).path("/metadata");
+            when.method(GET)
+                .path("/metadata")
+                .header_exists("Authorization");
             then.status(200).body("OK");
         });
 
@@ -153,7 +160,9 @@ pub(crate) mod tests {
 
         let server = MockServer::start();
         let metadata_mock = server.mock(|when, then| {
-            when.method(GET).path("/metadata");
+            when.method(GET)
+                .path("/metadata")
+                .header_exists("Authorization");
             then.status(404);
         });
 
