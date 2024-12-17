@@ -230,9 +230,6 @@ mod tests {
         // mock was called once
         post_mock.assert();
         done.assert();
-
-        // assert client is created
-        // assert!(client.is_ok());
     }
 
     async fn send_record(

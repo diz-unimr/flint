@@ -1,6 +1,6 @@
-use crate::config::AppConfig;
+use crate::config::{AppConfig, Fhir};
 use log::{debug, error, info};
-use reqwest::header::HeaderMap;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::{header, Client, Response};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Error};
 use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
@@ -10,18 +10,33 @@ use std::time::Duration;
 #[derive(Debug, Clone)]
 pub(crate) struct FhirClient {
     client: ClientWithMiddleware,
-    headers: HeaderMap,
     url: String,
 }
 
 impl FhirClient {
     pub(crate) async fn new(config: &AppConfig) -> Result<Self, Box<dyn std::error::Error>> {
+        // default headers
         let mut headers = HeaderMap::new();
         headers.insert(
             header::CONTENT_TYPE,
-            header::HeaderValue::from_static("application/fhir+json"),
+            HeaderValue::from_static("application/fhir+json"),
         );
+        // set auth header as default
+        if let Some(auth) = config
+            .fhir
+            .server
+            .auth
+            .as_ref()
+            .and_then(|a| a.basic.as_ref())
+        {
+            if let (Some(user), Some(password)) = (auth.user.clone(), auth.password.clone()) {
+                // auth header
+                let auth_value = create_auth_header(user, Some(password));
+                headers.insert(header::AUTHORIZATION, auth_value);
+            }
+        }
 
+        // retry
         let retry = ExponentialBackoff::builder()
             .retry_bounds(
                 Duration::from_secs(config.fhir.retry.wait),
@@ -29,66 +44,59 @@ impl FhirClient {
             )
             .build_with_max_retries(config.fhir.retry.count);
 
-        let client = Client::builder()
-            .timeout(Duration::from_secs(config.fhir.retry.timeout))
-            .default_headers(headers.clone())
-            .build();
-        match client {
-            Ok(client) => {
-                let mut req_builder = client.get(config.fhir.server.base_url.clone() + "/metadata");
-                if let Some(auth) = config
-                    .fhir
-                    .server
-                    .auth
-                    .as_ref()
-                    .and_then(|a| a.basic.as_ref())
-                {
-                    if let (Some(user), Some(password)) = (auth.user.clone(), auth.password.clone())
-                    {
-                        // auth header
-                        req_builder = req_builder.basic_auth(user, Some(password));
-                    }
-                }
+        // client with retry middleware
+        let client = ClientBuilder::new(
+            Client::builder()
+                .default_headers(headers.clone())
+                .timeout(Duration::from_secs(config.fhir.retry.timeout))
+                .build()?,
+        )
+        .with(RetryTransientMiddleware::new_with_policy(retry))
+        .build();
 
-                // retry
-                let client =
-                    ClientBuilder::new(Client::builder().default_headers(headers.clone()).build()?)
-                        .with(RetryTransientMiddleware::new_with_policy(retry))
-                        .build();
-
-                // test connection
-                match req_builder.send().await {
-                    Ok(resp) => {
-                        info!("Connection successful");
-                        if resp.status().is_success() {
-                            Ok(FhirClient {
-                                client,
-                                headers,
-                                url: config.fhir.server.base_url.clone(),
-                            })
-                        } else {
-                            error!("Metadata response returned error code: {}", resp.status());
-                            Err("Unsuccessful metadata request".into())
-                        }
-                    }
-                    Err(e) => {
-                        error!("Connection failed, {e}");
-                        Err(e.into())
-                    }
+        // test connection
+        match client
+            .get(config.fhir.server.base_url.clone() + "/metadata")
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                info!("Connection successful");
+                if resp.status().is_success() {
+                    Ok(FhirClient {
+                        client,
+                        url: config.fhir.server.base_url.clone(),
+                    })
+                } else {
+                    error!("Metadata response returned error code: {}", resp.status());
+                    Err("Unsuccessful metadata request".into())
                 }
             }
-            Err(e) => Err(e.into()),
+            Err(e) => {
+                error!("Connection failed, {e}");
+                Err(e.into())
+            }
         }
     }
 
     pub(crate) fn send(self, payload: &str) -> impl Future<Output = Result<Response, Error>> {
         debug!("Sending bundle to: {}", self.url);
-        self.client
-            .post(self.url)
-            .headers(self.headers)
-            .body(payload.to_owned())
-            .send()
+        self.client.post(self.url).body(payload.to_owned()).send()
     }
+}
+
+fn create_auth_header(user: String, password: Option<String>) -> HeaderValue {
+    let builder = Client::new()
+        .get("http://localhost")
+        .basic_auth(user, password);
+
+    builder
+        .build()
+        .unwrap()
+        .headers()
+        .get(AUTHORIZATION)
+        .unwrap()
+        .clone()
 }
 
 #[cfg(test)]
@@ -129,7 +137,6 @@ pub(crate) mod tests {
         });
 
         let config = setup_config(server.base_url());
-        // config.fhir.server.base_url = server.base_url();
         // create new client
         let client = FhirClient::new(&config).await;
 

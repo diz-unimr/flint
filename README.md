@@ -38,9 +38,9 @@ Application properties are read from a properties file ([app.yaml](./app.yaml)) 
 | `app.log_level`                   | info                         | Log level (error,warn,info,debug,trace)       |
 | `kafka.brokers`                   | localhost:9092               | Kafka brokers                                 |
 | `kafka.security_protocol`         | plaintext                    | Kafka communication protocol                  |
-| `kafka.ssl.ca_location`           | /app/cert/kafka-ca.pem       | Kafka CA certificate location                 |
-| `kafka.ssl.certificate_location`  | /app/cert/app-cert.pem       | Client certificate location                   |
-| `kafka.ssl.key_location`          | /app/cert/app-key.pem        | Client key location                           |
+| `kafka.ssl.ca_location`           | /app/cert/kafka_ca.pem       | Kafka CA certificate location                 |
+| `kafka.ssl.certificate_location`  | /app/cert/app_cert.pem       | Client certificate location                   |
+| `kafka.ssl.key_location`          | /app/cert/app_key.pem        | Client key location                           |
 | `kafka.ssl.key_password`          |                              | Client key password                           |
 | `kafka.consumer_group`            | fhir-to-diz                  | Consumer group name                           |
 | `kafka.input_topics`              |                              | Kafka topics to consume (comma separated)     |
