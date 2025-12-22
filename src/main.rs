@@ -13,6 +13,7 @@ use rdkafka::message::{BorrowedMessage, Headers, Message};
 use rdkafka::ClientConfig;
 use std::env;
 use std::sync::Arc;
+use tracing_subscriber::EnvFilter;
 
 async fn run(config: AppConfig, topic: String, client: FhirClient) {
     // create consumer
@@ -93,8 +94,14 @@ async fn main() {
         Ok(s) => s,
         Err(e) => panic!("Failed to parse app settings: {e:?}"),
     };
-    env::set_var("RUST_LOG", config.app.log_level.clone());
-    env_logger::init();
+    let filter = format!(
+        "{}={level},tower_http={level}",
+        env!("CARGO_CRATE_NAME"),
+        level = config.app.log_level
+    );
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| filter.into()))
+        .init();
 
     let client = match FhirClient::new(&config).await {
         Ok(c) => c,
