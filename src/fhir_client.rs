@@ -1,9 +1,9 @@
 use crate::config::AppConfig;
-use log::{debug, error, info};
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
-use reqwest::{header, Client, Response};
+use log::{error, info, trace};
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+use reqwest::{Client, Response, header};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Error};
-use reqwest_retry::{policies::ExponentialBackoff, RetryTransientMiddleware};
+use reqwest_retry::{RetryTransientMiddleware, policies::ExponentialBackoff};
 use std::future::Future;
 use std::time::Duration;
 
@@ -28,12 +28,11 @@ impl FhirClient {
             .auth
             .as_ref()
             .and_then(|a| a.basic.as_ref())
+            && let (Some(user), Some(password)) = (auth.user.clone(), auth.password.clone())
         {
-            if let (Some(user), Some(password)) = (auth.user.clone(), auth.password.clone()) {
-                // auth header
-                let auth_value = create_auth_header(user, Some(password));
-                headers.insert(header::AUTHORIZATION, auth_value);
-            }
+            // auth header
+            let auth_value = create_auth_header(user, Some(password));
+            headers.insert(header::AUTHORIZATION, auth_value);
         }
 
         // retry
@@ -55,6 +54,7 @@ impl FhirClient {
         .build();
 
         // test connection
+        info!("Connecting to FHIR server..");
         match client
             .get(config.fhir.server.base_url.clone() + "/metadata")
             .send()
@@ -79,9 +79,9 @@ impl FhirClient {
         }
     }
 
-    pub(crate) fn send(self, payload: &str) -> impl Future<Output = Result<Response, Error>> {
-        debug!("Sending bundle to: {}", self.url);
-        self.client.post(self.url).body(payload.to_owned()).send()
+    pub(crate) fn send(&self, payload: &str) -> impl Future<Output = Result<Response, Error>> {
+        trace!("Sending bundle to: {}", self.url);
+        self.client.post(&self.url).body(payload.to_owned()).send()
     }
 }
 

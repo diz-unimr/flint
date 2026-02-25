@@ -4,96 +4,126 @@ mod fhir_client;
 use crate::config::Kafka;
 use crate::fhir_client::FhirClient;
 use config::AppConfig;
+use futures::TryStreamExt;
+use futures::future::join_all;
 use futures::stream::FuturesUnordered;
-use futures::{StreamExt, TryStreamExt};
-use log::{debug, error, info};
+use log::{debug, error, info, trace};
+use rdkafka::ClientConfig;
 use rdkafka::config::RDKafkaLogLevel;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::{BorrowedMessage, Headers, Message};
-use rdkafka::ClientConfig;
-use std::env;
+use serde_derive::Deserialize;
+use std::error::Error;
 use std::sync::Arc;
+use std::time::Duration;
+use std::{env, process};
+use tokio::time::sleep;
 use tracing_subscriber::EnvFilter;
 
-async fn run(config: AppConfig, topic: String, client: FhirClient) {
-    // create consumer
-    let consumer: StreamConsumer = create_consumer(config.kafka);
-    match consumer.subscribe(&[&topic]) {
-        Ok(_) => {
-            info!("Successfully subscribed to topic: {:?}", topic);
+async fn run(config: Kafka, topic: String, client: Arc<FhirClient>) {
+    loop {
+        // create consumer
+        let consumer: StreamConsumer = create_consumer(config.clone());
+        match consumer.subscribe(&[&topic]) {
+            Ok(()) => {
+                info!("Successfully subscribed to topic {topic}");
+            }
+            Err(e) => {
+                error!("Failed to subscribe to specified topic: {e}");
+                break;
+            }
         }
-        Err(error) => error!("Failed to subscribe to specified topic: {}", error),
-    }
-    let consumer = Arc::new(consumer);
+        let consumer = Arc::new(consumer);
 
-    let stream = consumer
-        .stream()
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
-        .try_for_each(|m| {
-            let consumer = consumer.clone();
-            let client = client.clone();
+        let stream = consumer
+            .stream()
+            .map_err(|e| Box::new(e) as Box<dyn Error>)
+            .try_for_each(|m| {
+                let consumer = consumer.clone();
+                let client = client.clone();
 
-            {
                 let topic = topic.clone();
                 async move {
                     let (key, payload) = deserialize_message(&m);
 
-                    debug!("key: '{}', payload: '{}', topic: {}, partition: {}, offset: {}, timestamp: {:?}",
-                        key,payload.as_deref().unwrap_or("[null]"),m.topic(),m.partition(),m.offset(),m.timestamp());
+                    debug!("[Received] message from {topic}, key: {key}");
+                    trace!("Message key: '{}', payload: '{}', topic: {}, partition: {}, offset: {}, timestamp: {:?}",
+                            key,payload.as_deref().unwrap_or("[null]"),m.topic(),m.partition(),m.offset(),m.timestamp());
 
                     if let Some(headers) = m.headers() {
                         for header in headers.iter() {
-                            debug!("Header {:#?}: {:?}", header.key, header.value);
+                            trace!("Header {:#?}: {:?}", header.key, header.value);
                         }
                     }
 
                     // filter tombstone records
                     if payload.is_none() {
-                        return Ok(())
+                        return Ok(());
                     }
 
 
                     // send payload to FHIR server
                     let res = client.send(&payload.unwrap()).await;
                     match res {
-                        Ok(b) => {
-                            if b.status().is_success() {
-                                debug!("Response indicates success: {}", b.text().await.unwrap());
+                        Ok(b) if b.status().is_success() => {
+                            let status = b.status();
+                            let id = b.json::<ResponseBundle>().await.map(|b| b.id)?;
+                            debug!("[Sent] bundle to FHIR server, id: {id}");
+                            trace!("[Response] {}", status);
 
-                                // store offset
-                                consumer
-                                    .store_offset_from_message(&m)
-                                    .expect("Failed to store offset for message");
-                                Ok(())
-                            } else {
-                                error!("Error response: {}", b.status());
-                                // stop processing
-                                consumer.unsubscribe();
-                                Err(format!("Failed to send payload to the FHIR server (status: {}). Stopping consumer for {}", b.status(), topic).into())
-                            }
+                            // store offset
+                            consumer
+                                .store_offset_from_message(&m)
+                                .expect("Failed to store offset for message");
+                            Ok(())
+                        }
+                        Ok(b) => {
+                            error!("Error response: {}", b.status());
+                            // stop processing
+                            consumer.unsubscribe();
+                            Err(format!("Failed to send payload to the FHIR server (status: {}). Stopping consumer for {}", b.status(), topic).into())
                         }
                         Err(e) => {
                             // stop processing
                             error!("Got an error: {}", e);
                             consumer.unsubscribe();
-                            Err(Box::new(e) as Box<dyn std::error::Error>)
+                            Err(Box::new(e) as Box<dyn Error>)
                         }
                     }
                 }
-            }
-        });
+            });
 
-    info!("Starting consumers");
-    let error = stream.await;
-    info!("Consumers terminated: {:?}", error);
+        info!("Starting consumer for topic: {topic}");
+        match stream.await {
+            Err(e) => error!("Consumer for topic {topic} terminated: {e}"),
+
+            Ok(()) => {
+                info!("Consumer stream for topic {topic} unexpectedly ended");
+                break;
+            }
+        }
+
+        info!("Restarting consumer for topic {topic} in 10 seconds...");
+        sleep(Duration::from_secs(10)).await;
+    }
+}
+#[derive(Deserialize)]
+struct ResponseBundle {
+    id: String,
 }
 
 #[tokio::main]
 async fn main() {
+    // app config
     let config = match AppConfig::new() {
-        Ok(s) => s,
-        Err(e) => panic!("Failed to parse app settings: {e:?}"),
+        Ok(config) => config,
+        Err(e) => {
+            println!("Failed to parse app settings: {e}");
+            process::exit(1)
+        }
     };
+
+    // logging / tracing
     let filter = format!(
         "{}={level},tower_http={level}",
         env!("CARGO_CRATE_NAME"),
@@ -104,8 +134,11 @@ async fn main() {
         .init();
 
     let client = match FhirClient::new(&config).await {
-        Ok(c) => c,
-        Err(e) => panic!("Failed create HTTP FHIR client: {e:?}"),
+        Ok(c) => Arc::new(c),
+        Err(e) => {
+            error!("Failed to create HTTP client: {e}");
+            process::exit(1)
+        }
     };
 
     let topics = config
@@ -114,12 +147,13 @@ async fn main() {
         .split(',')
         .map(String::from)
         .collect::<Vec<String>>();
-    topics
-        .iter()
-        .map(|t| tokio::spawn(run(config.clone(), t.clone(), client.clone())))
-        .collect::<FuturesUnordered<_>>()
-        .for_each(|_| async { () })
-        .await
+
+    let tasks = topics
+        .into_iter()
+        .map(|t| tokio::spawn(run(config.kafka.clone(), t, Arc::clone(&client))))
+        .collect::<FuturesUnordered<_>>();
+
+    join_all(tasks).await;
 }
 
 fn create_consumer(config: Kafka) -> StreamConsumer {
@@ -175,15 +209,19 @@ fn deserialize_message(m: &BorrowedMessage) -> (String, Option<String>) {
 
 #[cfg(test)]
 mod tests {
-    use crate::fhir_client::tests::setup_config;
     use crate::fhir_client::FhirClient;
+    use crate::fhir_client::tests::setup_config;
     use crate::run;
     use httpmock::Method::{GET, POST};
-    use httpmock::MockServer;
+    use httpmock::{HttpMockRequest, HttpMockResponse, MockServer};
     use rdkafka::mocking::MockCluster;
     use rdkafka::producer::future_producer::OwnedDeliveryResult;
     use rdkafka::producer::{FutureProducer, FutureRecord};
+    use serde_json::json;
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::select;
+    use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
     async fn test_run() {
@@ -203,40 +241,58 @@ mod tests {
         send_record(mock_producer.clone(), TOPIC, "test")
             .await
             .unwrap();
-        send_record(mock_producer.clone(), TOPIC, "done")
-            .await
-            .unwrap();
+
+        // task cancellation
+        let token = CancellationToken::new();
+        let cloned_token = token.clone();
 
         // create mock fhir server
         let server = MockServer::start();
-        server.mock(|when, then| {
+        // metadata mock
+        let metadata_mock = server.mock(|when, then| {
             when.method(GET).path("/metadata");
             then.status(200).body("OK");
         });
+        // post data mock
         let post_mock = server.mock(|when, then| {
+            let token = token.clone();
             when.method(POST).path("/").body("test");
-            then.status(200).body("OK");
+            then.respond_with(move |_: &HttpMockRequest| {
+                println!("cancelling token");
+                token.cancel();
+
+                HttpMockResponse::builder()
+                    .status(200)
+                    .body(json!({"id":"ok"}).to_string())
+                    .build()
+            });
         });
-        let done = server.mock(|when, then| {
-            when.method(POST).path("/").body("done");
-            then.status(500).body("done");
-        });
+
         // setup config
         let mut config = setup_config(server.base_url());
         config.kafka.brokers = mock_cluster.bootstrap_servers();
-        config.kafka.offset_reset = String::from("earliest");
-        config.kafka.security_protocol = String::from("plaintext");
-        config.kafka.consumer_group = String::from("test");
+        config.kafka.offset_reset = "earliest".to_string();
+        config.kafka.security_protocol = "plaintext".to_string();
+        config.kafka.consumer_group = "test".to_string();
 
         // create new client
         let client = FhirClient::new(&config).await.unwrap();
 
-        // run
-        run(config, TOPIC.to_string(), client.clone()).await;
+        tokio::spawn(async move { run(config.kafka, TOPIC.to_string(), Arc::new(client)).await });
+        select! {
+            _ = cloned_token.cancelled() => {
+                // The token was canceled
+                println!("task canceled");
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
+                // timeout
+                println!("timeout waiting for task");
+            }
+        }
 
-        // mock was called once
+        // mocks were called once
+        metadata_mock.assert();
         post_mock.assert();
-        done.assert();
     }
 
     async fn send_record(
