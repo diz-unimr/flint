@@ -51,7 +51,7 @@ async fn run(config: Kafka, topic: String, client: Arc<FhirClient>, token: Cance
         match stream.await {
             Err(e) => error!("Consumer for topic {topic} terminated: {e}"),
             Ok(()) => {
-                warn!("Consumer stream for topic {topic} ended");
+                warn!("Consumer stream for topic {topic} unexpectedly ended");
                 break;
             }
         }
@@ -111,7 +111,7 @@ async fn process_message(
 
     // send payload to FHIR server
     let res = client.send(&payload.unwrap()).await;
-    match res {
+    let result = match res {
         Ok(b) if b.status().is_success() => {
             let status = b.status();
             let id = b.json::<ResponseBundle>().await.map(|b| b.id)?;
@@ -139,6 +139,13 @@ async fn process_message(
             consumer.unsubscribe();
             Err(anyhow!(e))
         }
+    };
+
+    if token.is_cancelled() {
+        consumer.unsubscribe();
+        Err(anyhow!("Consumer for topic {topic} stopped"))
+    } else {
+        result
     }
 }
 
@@ -334,19 +341,8 @@ mod tests {
         // create new client
         let client = FhirClient::new(&config).await.unwrap();
 
-        tokio::spawn(
-            async move { run(config.kafka, TOPIC.to_string(), Arc::new(client), token).await },
-        );
-        select! {
-            _ = cloned_token.cancelled() => {
-                // The token was canceled
-                println!("task canceled");
-            }
-            _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {
-                // timeout
-                println!("timeout waiting for task");
-            }
-        }
+        // processor
+        run(config.kafka, TOPIC.to_string(), Arc::new(client), token).await;
 
         // mocks were called once
         metadata_mock.assert();
