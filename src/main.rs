@@ -3,24 +3,26 @@ mod fhir_client;
 
 use crate::config::Kafka;
 use crate::fhir_client::FhirClient;
+use anyhow::anyhow;
 use config::AppConfig;
 use futures::TryStreamExt;
 use futures::future::join_all;
 use futures::stream::FuturesUnordered;
-use log::{debug, error, info, trace};
+use log::{debug, error, info, trace, warn};
 use rdkafka::ClientConfig;
 use rdkafka::config::RDKafkaLogLevel;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::{BorrowedMessage, Headers, Message};
 use serde_derive::Deserialize;
-use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{env, process};
-use tokio::time::sleep;
+use tokio::select;
+use tokio::signal::unix::{SignalKind, signal};
+use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
-async fn run(config: Kafka, topic: String, client: Arc<FhirClient>) {
+async fn run(config: Kafka, topic: String, client: Arc<FhirClient>, token: CancellationToken) {
     loop {
         // create consumer
         let consumer: StreamConsumer = create_consumer(config.clone());
@@ -35,78 +37,122 @@ async fn run(config: Kafka, topic: String, client: Arc<FhirClient>) {
         }
         let consumer = Arc::new(consumer);
 
-        let stream = consumer
-            .stream()
-            .map_err(|e| Box::new(e) as Box<dyn Error>)
-            .try_for_each(|m| {
-                let consumer = consumer.clone();
-                let client = client.clone();
-
-                let topic = topic.clone();
-                async move {
-                    let (key, payload) = deserialize_message(&m);
-
-                    debug!("[Received] message from {topic}, key: {key}");
-                    trace!("Message key: '{}', payload: '{}', topic: {}, partition: {}, offset: {}, timestamp: {:?}",
-                            key,payload.as_deref().unwrap_or("[null]"),m.topic(),m.partition(),m.offset(),m.timestamp());
-
-                    if let Some(headers) = m.headers() {
-                        for header in headers.iter() {
-                            trace!("Header {:#?}: {:?}", header.key, header.value);
-                        }
-                    }
-
-                    // filter tombstone records
-                    if payload.is_none() {
-                        return Ok(());
-                    }
-
-
-                    // send payload to FHIR server
-                    let res = client.send(&payload.unwrap()).await;
-                    match res {
-                        Ok(b) if b.status().is_success() => {
-                            let status = b.status();
-                            let id = b.json::<ResponseBundle>().await.map(|b| b.id)?;
-                            debug!("[Sent] bundle to FHIR server, id: {id}");
-                            trace!("[Response] {}", status);
-
-                            // store offset
-                            consumer
-                                .store_offset_from_message(&m)
-                                .expect("Failed to store offset for message");
-                            Ok(())
-                        }
-                        Ok(b) => {
-                            error!("Error response: {}", b.status());
-                            // stop processing
-                            consumer.unsubscribe();
-                            Err(format!("Failed to send payload to the FHIR server (status: {}). Stopping consumer for {}", b.status(), topic).into())
-                        }
-                        Err(e) => {
-                            // stop processing
-                            error!("Got an error: {}", e);
-                            consumer.unsubscribe();
-                            Err(Box::new(e) as Box<dyn Error>)
-                        }
-                    }
-                }
-            });
+        let stream = consumer.stream().map_err(|e| anyhow!(e)).try_for_each(|m| {
+            process_message(
+                m,
+                consumer.clone(),
+                client.clone(),
+                topic.clone(),
+                token.clone(),
+            )
+        });
 
         info!("Starting consumer for topic: {topic}");
         match stream.await {
             Err(e) => error!("Consumer for topic {topic} terminated: {e}"),
-
             Ok(()) => {
-                info!("Consumer stream for topic {topic} unexpectedly ended");
+                warn!("Consumer stream for topic {topic} ended");
                 break;
             }
         }
 
         info!("Restarting consumer for topic {topic} in 10 seconds...");
-        sleep(Duration::from_secs(10)).await;
+        if !do_retry(token.clone(), Duration::from_secs(10)).await {
+            // The token was cancelled
+            consumer.unsubscribe();
+            trace!("Consumer for topic {topic} was stopped by cancellation");
+            break;
+        }
     }
 }
+
+async fn process_message(
+    m: BorrowedMessage<'_>,
+    consumer: Arc<StreamConsumer>,
+    client: Arc<FhirClient>,
+    topic: String,
+    token: CancellationToken,
+) -> anyhow::Result<()> {
+    if token.is_cancelled() {
+        consumer.unsubscribe();
+        return Err(anyhow!("Consumer for topic {topic} stopped"));
+    }
+
+    let (key, payload) = deserialize_message(&m);
+
+    debug!("[Received] message from {topic}, key: {key}");
+    trace!(
+        "Message key: '{}', payload: '{}', topic: {}, partition: {}, offset: {}, timestamp: {:?}",
+        key,
+        payload.as_deref().unwrap_or("[null]"),
+        m.topic(),
+        m.partition(),
+        m.offset(),
+        m.timestamp()
+    );
+
+    if let Some(headers) = m.headers() {
+        for header in headers.iter() {
+            trace!(
+                "Header {}:{}",
+                header.key,
+                header
+                    .value
+                    .map(String::from_utf8_lossy)
+                    .unwrap_or_default()
+            );
+        }
+    }
+
+    // filter tombstone records
+    if payload.is_none() {
+        return Ok(());
+    }
+
+    // send payload to FHIR server
+    let res = client.send(&payload.unwrap()).await;
+    match res {
+        Ok(b) if b.status().is_success() => {
+            let status = b.status();
+            let id = b.json::<ResponseBundle>().await.map(|b| b.id)?;
+            debug!("[Sent] bundle to FHIR server, id: {id}");
+            trace!("[Response] {}", status);
+
+            // store offset
+            consumer
+                .store_offset_from_message(&m)
+                .expect("Failed to store offset for message");
+            Ok(())
+        }
+        Ok(b) => {
+            error!("Error response from server: {}", b.status());
+            // stop processing
+            consumer.unsubscribe();
+            Err(anyhow!(
+                "Failed to send payload to the FHIR server (status: {}). Stopping consumer for {topic}",
+                b.status()
+            ))
+        }
+        Err(e) => {
+            // stop processing
+            error!("Failed to send request to server: {e}");
+            consumer.unsubscribe();
+            Err(anyhow!(e))
+        }
+    }
+}
+
+async fn do_retry(token: CancellationToken, wait: Duration) -> bool {
+    select! {
+        _ =  token.cancelled() => {
+            false
+        }
+        _ = tokio::time::sleep(wait) => {
+        true
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct ResponseBundle {
     id: String,
@@ -141,6 +187,16 @@ async fn main() {
         }
     };
 
+    // cancellation
+    let cancel = CancellationToken::new();
+    let cloned_token = cancel.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.unwrap();
+        signal(SignalKind::terminate()).unwrap().recv().await;
+        info!("🛑 SIGTERM received. Shutting down consumers..");
+        cloned_token.cancel();
+    });
+
     let topics = config
         .kafka
         .input_topics
@@ -150,7 +206,7 @@ async fn main() {
 
     let tasks = topics
         .into_iter()
-        .map(|t| tokio::spawn(run(config.kafka.clone(), t, Arc::clone(&client))))
+        .map(|t| tokio::spawn(run(config.kafka.clone(), t, client.clone(), cancel.clone())))
         .collect::<FuturesUnordered<_>>();
 
     join_all(tasks).await;
@@ -278,7 +334,9 @@ mod tests {
         // create new client
         let client = FhirClient::new(&config).await.unwrap();
 
-        tokio::spawn(async move { run(config.kafka, TOPIC.to_string(), Arc::new(client)).await });
+        tokio::spawn(
+            async move { run(config.kafka, TOPIC.to_string(), Arc::new(client), token).await },
+        );
         select! {
             _ = cloned_token.cancelled() => {
                 // The token was canceled

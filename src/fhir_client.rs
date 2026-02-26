@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use anyhow::anyhow;
 use log::{error, info, trace};
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use reqwest::{Client, Response, header};
@@ -14,7 +15,7 @@ pub(crate) struct FhirClient {
 }
 
 impl FhirClient {
-    pub(crate) async fn new(config: &AppConfig) -> Result<Self, Box<dyn std::error::Error>> {
+    pub(crate) async fn new(config: &AppConfig) -> anyhow::Result<Self> {
         // default headers
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -69,11 +70,11 @@ impl FhirClient {
                     })
                 } else {
                     error!("Metadata response returned error code: {}", resp.status());
-                    Err("Unsuccessful metadata request".into())
+                    Err(anyhow!("Unsuccessful metadata request"))
                 }
             }
             Err(e) => {
-                error!("Connection failed, {e}");
+                error!("Connection to FHIR server failed, {e}");
                 Err(e.into())
             }
         }
