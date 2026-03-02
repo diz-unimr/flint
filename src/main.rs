@@ -2,7 +2,7 @@ mod config;
 mod fhir_client;
 mod processor;
 
-use crate::processor::Processor;
+use crate::processor::{Context, Processor};
 use config::AppConfig;
 use log::{error, info};
 use rdkafka::ClientConfig;
@@ -24,7 +24,7 @@ async fn main() {
 
     // logging / tracing
     let filter = format!(
-        "{}={level},tower_http={level}",
+        "{}={level},reqwest_retry={level}",
         env!("CARGO_CRATE_NAME"),
         level = config.app.log_level
     );
@@ -42,7 +42,11 @@ async fn main() {
         cloned_token.cancel();
     });
 
-    match Processor::new(config, cancel).await {
+    let ctx = Context {
+        cancel,
+        on_commit: None,
+    };
+    match Processor::new(config, ctx).await {
         Ok(processor) => {
             processor.start().await;
         }

@@ -1,35 +1,80 @@
 use crate::ClientConfig;
 use crate::config::AppConfig;
-use crate::fhir_client::FhirClient;
+use crate::fhir_client::{FhirClient, FhirClientError};
 use anyhow::anyhow;
 use futures::TryStreamExt;
 use futures::future::join_all;
 use futures::stream::FuturesUnordered;
 use log::{debug, error, info, trace, warn};
-use rdkafka::Message;
 use rdkafka::config::RDKafkaLogLevel;
-use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance, StreamConsumer};
+use rdkafka::error::{KafkaError, KafkaResult};
 use rdkafka::message::{BorrowedMessage, Headers};
-use serde_derive::Deserialize;
+use rdkafka::{ClientContext, Message, TopicPartitionList};
 use std::sync::Arc;
 use std::time::Duration;
+use thiserror::Error;
 use tokio::select;
+use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Deserialize)]
-struct ResponseBundle {
-    id: String,
+#[derive(Error, Debug)]
+pub(crate) enum ProcessingError {
+    #[error(transparent)]
+    FhirClient(#[from] FhirClientError),
+    #[error("consumer for topic {0} was cancelled")]
+    Cancelled(String),
+    #[error(transparent)]
+    Kafka(#[from] KafkaError),
 }
 
 pub(crate) struct Processor {
     config: AppConfig,
+    ctx: Context,
     topics: Vec<String>,
     client: Arc<FhirClient>,
-    cancel: CancellationToken,
+}
+
+#[derive(Clone)]
+pub(crate) struct Context {
+    pub(crate) on_commit: Option<Sender<TopicPartitionList>>,
+    pub(crate) cancel: CancellationToken,
+}
+type ProcessingConsumer = StreamConsumer<Context>;
+impl ClientContext for Context {}
+impl ConsumerContext for Context {
+    fn pre_rebalance(&self, _: &BaseConsumer<Self>, rebalance: &Rebalance) {
+        debug!("Pre rebalance {:?}", rebalance);
+    }
+
+    fn post_rebalance(&self, _: &BaseConsumer<Self>, rebalance: &Rebalance) {
+        debug!("Post rebalance {:?}", rebalance);
+    }
+
+    fn commit_callback(&self, result: KafkaResult<()>, _offsets: &TopicPartitionList) {
+        debug!("Committed offsets: {:?}", _offsets);
+
+        if let Some(hook) = &self.on_commit {
+            match result {
+                Ok(_) => {
+                    let sender = hook.clone();
+                    let offsets = _offsets.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = sender.send(offsets).await {
+                            error!("Failed to send commit_callback result: {e}");
+                        }
+                    });
+                }
+                Err(e) => {
+                    warn!("Offset commit returned error: {e}");
+                }
+            }
+        }
+    }
 }
 
 impl Processor {
-    pub(crate) async fn new(config: AppConfig, cancel: CancellationToken) -> anyhow::Result<Self> {
+    pub(crate) async fn new(config: AppConfig, ctx: Context) -> anyhow::Result<Self> {
         let client = FhirClient::new(&config)
             .await
             .map(Arc::new)
@@ -44,9 +89,9 @@ impl Processor {
 
         Ok(Self {
             config,
+            ctx,
             client,
             topics,
-            cancel,
         })
     }
 
@@ -68,13 +113,14 @@ impl Processor {
     async fn run(self: Arc<Self>, topic: String) {
         loop {
             // create consumer
-            let consumer: StreamConsumer = self.create_consumer();
+            let consumer = self.create_consumer();
             match consumer.subscribe(&[&topic]) {
                 Ok(()) => {
                     info!("Successfully subscribed to topic {topic}");
                 }
                 Err(e) => {
                     error!("Failed to subscribe to specified topic: {e}");
+                    // exit
                     break;
                 }
             }
@@ -82,22 +128,44 @@ impl Processor {
 
             let stream = consumer
                 .stream()
-                .map_err(|e| anyhow!(e))
+                .map_err(ProcessingError::from)
                 .try_for_each(|m| self.process_message(m, consumer.clone()));
 
             info!("Starting consumer for topic: {topic}");
             match stream.await {
-                Err(e) => error!("Consumer for topic {topic} terminated: {e}"),
+                // exit
+                Err(ProcessingError::Cancelled(e)) => {
+                    consumer.unsubscribe();
+                    error!("{e}. Exiting.");
+                    // exit loop
+                    break;
+                }
+                Err(ProcessingError::FhirClient(FhirClientError::ResponseError(e))) => {
+                    consumer.unsubscribe();
+                    error!("Failed to process message: {e}. Exiting.");
+                    // exit loop
+                    break;
+                }
+                // continue
+                Err(ProcessingError::Kafka(e)) => {
+                    consumer.unsubscribe();
+                    error!("Failed to process message: {e}. Retrying..");
+                }
+                // continue
+                Err(ProcessingError::FhirClient(FhirClientError::ClientError(e))) => {
+                    consumer.unsubscribe();
+                    error!("Failed to process message: {e}. Retrying..");
+                }
+                // exit
                 Ok(()) => {
                     warn!("Consumer stream for topic {topic} unexpectedly ended");
                     break;
                 }
-            }
+            };
 
             info!("Restarting consumer for topic {topic} in 10 seconds...");
-            if !self.should_continue(Duration::from_secs(10)).await {
+            if self.should_continue(Duration::from_secs(10)).await {
                 // The token was cancelled
-                consumer.unsubscribe();
                 trace!("Consumer for topic {topic} was stopped by cancellation");
                 break;
             }
@@ -107,12 +175,13 @@ impl Processor {
     async fn process_message(
         &self,
         m: BorrowedMessage<'_>,
-        consumer: Arc<StreamConsumer>,
-    ) -> anyhow::Result<()> {
+        consumer: Arc<ProcessingConsumer>,
+    ) -> Result<(), ProcessingError> {
         let topic = m.topic();
-        if self.cancel.is_cancelled() {
-            consumer.unsubscribe();
-            return Err(anyhow!("Consumer for topic {topic} stopped"));
+        if self.ctx.cancel.is_cancelled() {
+            return Err(ProcessingError::Cancelled(format!(
+                "Consumer for topic {topic} cancelled"
+            )));
         }
 
         let (key, payload) = deserialize_message(&m);
@@ -147,57 +216,33 @@ impl Processor {
         }
 
         // send payload to FHIR server
-        let res = self.client.send(&payload.unwrap()).await;
-        let result = match res {
-            Ok(b) if b.status().is_success() => {
-                let status = b.status();
-                let id = b.json::<ResponseBundle>().await.map(|b| b.id)?;
-                debug!("[Sent] bundle to FHIR server, id: {id}");
-                trace!("[Response] {}", status);
+        let b = self.client.send(&payload.unwrap()).await?;
+        debug!("[Sent] bundle to FHIR server, id: {}", b.id);
+        trace!("[Response] success");
 
-                // store offset
-                consumer
-                    .store_offset_from_message(&m)
-                    .expect("Failed to store offset for message");
-                Ok(())
-            }
-            Ok(b) => {
-                error!("Error response from server: {}", b.status());
-                // stop processing
-                consumer.unsubscribe();
-                Err(anyhow!(
-                    "Failed to send payload to the FHIR server (status: {}). Stopping consumer for {topic}",
-                    b.status()
-                ))
-            }
-            Err(e) => {
-                // stop processing
-                error!("Failed to send request to server: {e}");
-                consumer.unsubscribe();
-                Err(anyhow!(e))
-            }
-        };
+        // store offset
+        consumer.store_offset_from_message(&m)?;
 
-        if self.cancel.is_cancelled() {
-            consumer.unsubscribe();
-            Err(anyhow!("Consumer for topic {topic} stopped"))
-        } else {
-            result
+        match self.ctx.cancel.is_cancelled() {
+            true => Err(ProcessingError::Cancelled(format!(
+                "Consumer for topic {topic} cancelled"
+            ))),
+            false => Ok(()),
         }
     }
 
     async fn should_continue(&self, wait: Duration) -> bool {
         select! {
-            _ =  self.cancel.cancelled() => {
-                false
+            _ =  self.ctx.cancel.cancelled() => {
+                true
             }
             _ = tokio::time::sleep(wait) => {
-            true
+                false
             }
         }
     }
 
-    fn create_consumer(&self) -> StreamConsumer {
+    fn create_consumer(&self) -> ProcessingConsumer {
         let config = self.config.kafka.clone();
         let mut c = ClientConfig::new();
         c.set("bootstrap.servers", config.brokers)
@@ -225,7 +270,8 @@ impl Processor {
             }
         }
 
-        c.create().expect("Failed to create Kafka consumer")
+        c.create_with_context(self.ctx.clone())
+            .expect("Failed to create Kafka consumer")
     }
 }
 
@@ -252,37 +298,98 @@ fn deserialize_message(m: &BorrowedMessage) -> (String, Option<String>) {
 
 #[cfg(test)]
 mod tests {
+    use crate::fhir_client::FhirClientError;
     use crate::fhir_client::tests::setup_config;
-    use crate::processor::Processor;
+    use crate::processor::{Context, ProcessingError, Processor};
+    use futures::StreamExt;
     use httpmock::Method::{GET, POST};
     use httpmock::{HttpMockRequest, HttpMockResponse, MockServer};
+    use rdkafka::consumer::Consumer;
     use rdkafka::mocking::MockCluster;
     use rdkafka::producer::future_producer::OwnedDeliveryResult;
-    use rdkafka::producer::{FutureProducer, FutureRecord};
+    use rdkafka::producer::{DefaultProducerContext, FutureProducer, FutureRecord};
+    use rdkafka::{ClientConfig, TopicPartitionList};
     use serde_json::json;
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
+    const TOPIC: &str = "test_topic";
+
+    fn init_logger() {
+        let _ = env_logger::try_init();
+    }
+
     #[tokio::test]
-    async fn test_run() {
-        const TOPIC: &str = "test_topic";
+    async fn start_test() {
+        init_logger();
 
-        // create mock cluster
-        let mock_cluster = MockCluster::new(3).unwrap();
-        mock_cluster
-            .create_topic(TOPIC, 3, 3)
-            .expect("Failed to create topic");
+        let mock_cluster = setup_kafka(vec![(TOPIC, "test")]).await;
 
-        let mock_producer: FutureProducer = rdkafka::ClientConfig::new()
-            .set("bootstrap.servers", mock_cluster.bootstrap_servers())
-            .create()
-            .expect("Producer creation error");
+        // create mock fhir server
+        let server = MockServer::start();
+        // metadata mock
+        let metadata_mock = server.mock(|when, then| {
+            when.method(GET).path("/metadata");
+            then.status(200).body("OK");
+        });
+        // test mock
+        let test_mock = server.mock(|when, then| {
+            when.method(POST).path("/").body("test");
+            then.status(200)
+                .json_body(json!({"id":"ok","entry":[{"response":{"status":"201"}}]}));
+        });
 
-        send_record(mock_producer.clone(), TOPIC, "test")
-            .await
-            .unwrap();
+        // setup config
+        let config = setup_config(
+            server.base_url(),
+            mock_cluster.bootstrap_servers(),
+            TOPIC.to_string(),
+        );
 
-        // task cancellation
+        // consumer commit callback
+        let (tx, mut rx) = mpsc::channel::<TopicPartitionList>(1);
+
+        // processor
+        let p = Processor::new(
+            config,
+            Context {
+                cancel: CancellationToken::new(),
+                on_commit: Some(tx.clone()),
+            },
+        )
+        .await
+        .unwrap();
+
+        // run
+        tokio::spawn(p.start());
+
+        // wait for commit confirmation
+        let committed = rx.recv().await;
+
+        // fhir server mocks were called
+        metadata_mock.assert();
+        test_mock.assert();
+        // offset committed for test topic
+        assert_eq!(
+            committed
+                .unwrap()
+                .to_topic_map()
+                .into_keys()
+                .map(|k| k.0)
+                .next()
+                .unwrap(),
+            TOPIC
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_test() {
+        init_logger();
+
+        let mock_cluster = setup_kafka(vec![(TOPIC, "first"), (TOPIC, "second")]).await;
+
         let token = CancellationToken::new();
 
         // create mock fhir server
@@ -292,35 +399,126 @@ mod tests {
             when.method(GET).path("/metadata");
             then.status(200).body("OK");
         });
-        // test data mock
-        let test_mock = server.mock(|when, then| {
+        // test mock
+        let first_mock = server.mock(|when, then| {
             let token = token.clone();
-            when.method(POST).path("/").body("test");
+            when.method(POST).path("/").body("first");
             then.respond_with(move |_: &HttpMockRequest| {
-                println!("cancelling token");
+                // cancel consumer at next checkpoint
                 token.cancel();
 
+                // fhir server will return success
                 HttpMockResponse::builder()
                     .status(200)
-                    .body(json!({"id":"ok"}).to_string())
+                    .body(json!({"id":"test","entry":[{"response":{"status":"201"}}]}).to_string())
                     .build()
             });
         });
-
+        // cancelled mock
+        let second_mock = server.mock(|when, then| {
+            when.method(POST).path("/").body("second");
+            then.json_body(
+                json!({"id":"cancelled","entry":[{"response":{"status":"201"}}]}).to_string(),
+            );
+        });
         // setup config
-        let mut config = setup_config(server.base_url());
-        config.kafka.brokers = mock_cluster.bootstrap_servers();
-        config.kafka.offset_reset = "earliest".to_string();
-        config.kafka.security_protocol = "plaintext".to_string();
-        config.kafka.consumer_group = "test".to_string();
-        config.kafka.input_topics = TOPIC.to_string();
+        let config = setup_config(
+            server.base_url(),
+            mock_cluster.bootstrap_servers(),
+            TOPIC.to_string(),
+        );
 
         // processor
-        let p = Processor::new(config, token).await.unwrap();
+        let p = Processor::new(
+            config,
+            Context {
+                cancel: token,
+                on_commit: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // run
         p.start().await;
 
         metadata_mock.assert();
-        test_mock.assert();
+        first_mock.assert();
+        // second record was not processed
+        assert_eq!(second_mock.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn process_message_fails() {
+        init_logger();
+
+        let mock_cluster = setup_kafka(vec![(TOPIC, "ok")]).await;
+
+        // create mock fhir server
+        let server = MockServer::start();
+        // metadata mock
+        server.mock(|when, then| {
+            when.method(GET).path("/metadata");
+            then.status(200).body("OK");
+        });
+        server.mock(|when, then| {
+            when.method(POST).path("/").body("ok");
+            // should fail when deserializing to json body
+            then.status(200).body("invalid json!");
+        });
+        // setup config
+        let config = setup_config(
+            server.base_url(),
+            mock_cluster.bootstrap_servers(),
+            TOPIC.to_string(),
+        );
+
+        // processor
+        let token = CancellationToken::new();
+        let p = Processor::new(
+            config,
+            Context {
+                on_commit: None,
+                cancel: token.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        let consumer = Arc::new(p.create_consumer());
+        consumer.subscribe(&[TOPIC]).unwrap();
+
+        let msg = consumer.stream().next().await.unwrap().unwrap();
+
+        // act
+        let result = p.process_message(msg, consumer.clone()).await;
+
+        assert!(matches!(
+            result,
+            Err(ProcessingError::FhirClient(FhirClientError::ResponseError(
+                _
+            )))
+        ));
+    }
+
+    async fn setup_kafka<'a>(
+        records: Vec<(&str, &str)>,
+    ) -> MockCluster<'a, DefaultProducerContext> {
+        // create mock cluster
+        let mock_cluster = MockCluster::new(3).unwrap();
+        let mock_producer: FutureProducer = ClientConfig::new()
+            .set("bootstrap.servers", mock_cluster.bootstrap_servers())
+            .create()
+            .expect("Producer creation error");
+
+        for record in records {
+            let _ = mock_cluster.create_topic(record.0, 3, 3);
+
+            send_record(mock_producer.clone(), record.0, record.1)
+                .await
+                .unwrap();
+        }
+
+        mock_cluster
     }
 
     async fn send_record(
