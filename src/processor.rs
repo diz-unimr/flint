@@ -166,7 +166,7 @@ impl Processor {
             info!("Restarting consumer for topic {topic} in 10 seconds...");
             if self.should_continue(Duration::from_secs(10)).await {
                 // The token was cancelled
-                trace!("Consumer for topic {topic} was stopped by cancellation");
+                info!("Consumer for topic {topic} was stopped by cancellation");
                 break;
             }
         }

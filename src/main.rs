@@ -36,8 +36,8 @@ async fn main() {
     let cancel = CancellationToken::new();
     let cloned_token = cancel.clone();
     tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.unwrap();
-        signal(SignalKind::terminate()).unwrap().recv().await;
+        let mut sigterm = signal(SignalKind::terminate()).unwrap();
+        sigterm.recv().await;
         info!("🛑 SIGTERM received. Shutting down consumers..");
         cloned_token.cancel();
     });

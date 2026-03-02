@@ -94,7 +94,10 @@ impl FhirClient {
         .build();
 
         // test connection
-        info!("Connecting to FHIR server..");
+        info!(
+            "Connecting to FHIR server at {}",
+            config.fhir.server.base_url.clone()
+        );
         match client
             .get(config.fhir.server.base_url.clone() + "/metadata")
             .send()
