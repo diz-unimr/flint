@@ -84,6 +84,7 @@ impl Processor {
             .kafka
             .input_topics
             .split(',')
+            .map(|s| s.trim())
             .map(String::from)
             .collect::<Vec<String>>();
 
