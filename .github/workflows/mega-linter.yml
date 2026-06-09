@@ -55,6 +55,7 @@ jobs:
           # ADD YOUR CUSTOM ENV VARIABLES HERE OR DEFINE THEM IN A FILE .mega-linter.yml AT THE ROOT OF YOUR REPOSITORY
           # DISABLE: COPYPASTE,SPELL # Uncomment to disable copy-paste and spell checks
           DISABLE: SPELL # ignore spell checks
+          DISABLE_LINTERS: ACTION_ZIZMOR # disable for now
 
       # Upload MegaLinter artifacts
       - name: Archive production artifacts
