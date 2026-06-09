@@ -137,7 +137,7 @@ impl Processor {
                 // exit
                 Err(ProcessingError::Cancelled(e)) => {
                     consumer.unsubscribe();
-                    error!("{e}. Exiting.");
+                    info!("{e}. Exiting.");
                     // exit loop
                     break;
                 }
