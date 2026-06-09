@@ -5,21 +5,21 @@ edition = "2024"
 
 [dependencies]
 rdkafka = { version = "0.38.0", features = ["ssl", "cmake-build", "tracing"] }
-tokio = { version = "1.43.1", features = ["full"] }
-log = "0.4.22"
-env_logger = "0.11.8"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
-futures = "0.3.31"
-reqwest = { version = "0.13.2", features = ["json"] }
-config = "0.15.0"
-serde_derive = "1.0.215"
-serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.52.3", features = ["full"] }
+log = "0.4.32"
+env_logger = "0.11.10"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+futures = "0.3.32"
+reqwest = { version = "0.13.4", features = ["json"] }
+config = "0.15.23"
+serde_derive = "1.0.228"
+serde = { version = "1.0.228", features = ["derive"] }
 reqwest-retry = "0.9.1"
-reqwest-middleware = "0.5.1"
-tokio-util = "0.7.12"
-serde_json = "1.0.149"
+reqwest-middleware = "0.5.2"
+tokio-util = "0.7.18"
+serde_json = "1.0.150"
 anyhow = "1.0.102"
 thiserror = "2.0.18"
 
 [dev-dependencies]
-httpmock = "0.8.0"
+httpmock = "0.8.3"
