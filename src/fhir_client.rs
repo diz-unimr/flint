@@ -27,7 +27,7 @@ pub(crate) struct FhirClient {
 #[derive(Deserialize)]
 pub(crate) struct ResponseBundle {
     pub(crate) id: String,
-    entry: Vec<ResponseBundleEntry>,
+    entry: Option<Vec<ResponseBundleEntry>>,
 }
 #[derive(Deserialize)]
 struct ResponseBundleEntry {
@@ -40,7 +40,7 @@ struct EntryResponse {
 
 impl ResponseBundle {
     fn success(self) -> Result<Self, FhirClientError> {
-        match self.entry.iter().all(|b| {
+        match self.entry.iter().flatten().all(|b| {
             StatusCode::from_str(b.response.status.as_str())
                 .map(|status| status.is_success())
                 .unwrap_or(false)
@@ -159,6 +159,7 @@ pub(crate) mod tests {
     use crate::fhir_client::FhirClient;
     use httpmock::Method::GET;
     use httpmock::MockServer;
+    use serde_json::json;
 
     fn init() {
         let _ = env_logger::builder().is_test(true).try_init();
@@ -240,5 +241,40 @@ pub(crate) mod tests {
 
         // assert client is created
         assert!(client.is_err());
+    }
+
+    #[tokio::test]
+    async fn empty_bundle_response_is_ok() {
+        let bundle = json!({
+          "resourceType": "Bundle",
+          "id": "test-id",
+          "type": "transaction"
+        });
+
+        init();
+
+        let server = MockServer::start();
+        let endpoint_mock = server.mock(|when, then| {
+            when.json_body(bundle.clone());
+            then.status(200).json_body(json!({
+                "id": "DHVM2GJTGACPXRVO",
+                "type": "transaction-response",
+                "resourceType": "Bundle"
+            }));
+        });
+
+        // send
+        let response = FhirClient {
+            client: Default::default(),
+            url: server.base_url(),
+        }
+        .send(serde_json::to_string(&bundle).unwrap().as_str())
+        .await;
+
+        // mock was called once
+        endpoint_mock.assert();
+
+        // assert response is ok
+        assert!(response.is_ok());
     }
 }
