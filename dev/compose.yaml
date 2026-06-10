@@ -52,9 +52,6 @@ services:
         kafkacat -b kafka:19092 -K: -t lab-fhir -P -l /data/lab-data.ndjson;
         sleep 10;
       done"
-    #    command: >
-    #      "kafkacat -b kafka:19092 -K: -t person-fhir -P -l /data/person-data.ndjson &&
-    #      kafkacat -b kafka:19092 -K: -t lab-fhir -P -l /data/lab-data.ndjson"
     volumes:
       - ./person-data.ndjson:/data/person-data.ndjson:ro
       - ./lab-data.ndjson:/data/lab-data.ndjson:ro
