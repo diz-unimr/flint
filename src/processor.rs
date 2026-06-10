@@ -5,12 +5,14 @@ use anyhow::anyhow;
 use futures::TryStreamExt;
 use futures::future::join_all;
 use futures::stream::FuturesUnordered;
+use itertools::Itertools;
 use log::{debug, error, info, trace, warn};
 use rdkafka::config::RDKafkaLogLevel;
 use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance, StreamConsumer};
 use rdkafka::error::{KafkaError, KafkaResult};
 use rdkafka::message::{BorrowedMessage, Headers};
-use rdkafka::{ClientContext, Message, TopicPartitionList};
+use rdkafka::{ClientContext, Message, Offset, TopicPartitionList};
+use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -44,21 +46,24 @@ type ProcessingConsumer = StreamConsumer<Context>;
 impl ClientContext for Context {}
 impl ConsumerContext for Context {
     fn pre_rebalance(&self, _: &BaseConsumer<Self>, rebalance: &Rebalance) {
-        debug!("Pre rebalance {:?}", rebalance);
+        info!("[Rebalance] pre {}", format_rebalance(rebalance));
     }
 
     fn post_rebalance(&self, _: &BaseConsumer<Self>, rebalance: &Rebalance) {
-        debug!("Post rebalance {:?}", rebalance);
+        info!("[Rebalance] post {}", format_rebalance(rebalance));
     }
 
-    fn commit_callback(&self, result: KafkaResult<()>, _offsets: &TopicPartitionList) {
-        debug!("Committed offsets: {:?}", _offsets);
+    fn commit_callback(&self, result: KafkaResult<()>, offsets: &TopicPartitionList) {
+        info!(
+            "[Offsets] committed for {}",
+            format_offsets_from_parts(offsets)
+        );
 
         if let Some(hook) = &self.on_commit {
             match result {
                 Ok(_) => {
                     let sender = hook.clone();
-                    let offsets = _offsets.clone();
+                    let offsets = offsets.clone();
                     tokio::spawn(async move {
                         if let Err(e) = sender.send(offsets).await {
                             error!("Failed to send commit_callback result: {e}");
@@ -71,6 +76,38 @@ impl ConsumerContext for Context {
             }
         }
     }
+}
+
+fn format_rebalance(r: &Rebalance) -> String {
+    match r {
+        Rebalance::Assign(t) => format!("assign {}", format_topic_partitions(t)),
+        Rebalance::Revoke(t) => format!("revoke {}", format_topic_partitions(t)),
+        Rebalance::Error(e) => format!("Error: {e}"),
+    }
+}
+
+fn format_topic_partitions(topic_parts: &TopicPartitionList) -> String {
+    topic_parts
+        .elements()
+        .iter()
+        .map(|e| (e.topic(), e.partition().to_string()))
+        .into_group_map()
+        .iter()
+        .map(|(t, p)| format!("topic: {}, partition(s): [{}]", t, p.join(" "),))
+        .collect::<String>()
+}
+fn format_offsets_from_parts(topic_parts: &TopicPartitionList) -> String {
+    topic_parts
+        .elements()
+        .iter()
+        .filter_map(|e| match e.offset() {
+            Offset::Offset(o) => Some((e.topic(), o.to_string())),
+            _ => None,
+        })
+        .into_group_map()
+        .iter()
+        .map(|(t, o)| format!("topic: {}, offset(s): [{}]", t, o.join(" ")))
+        .collect::<String>()
 }
 
 impl Processor {
