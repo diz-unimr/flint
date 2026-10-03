@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rdkafka = { version = "0.38.0", features = ["ssl", "cmake-build", "tracing"] }
+rdkafka = { version = "0.39.0", features = ["ssl", "cmake-build", "tracing"] }
 tokio = { version = "1.52.3", features = ["full"] }
 log = "0.4.32"
 env_logger = "0.11.10"
@@ -20,7 +20,7 @@ tokio-util = "0.7.18"
 serde_json = "1.0.150"
 anyhow = "1.0.102"
 thiserror = "2.0.18"
-itertools = "0.14.0"
+itertools = "0.15.0"
 
 [dev-dependencies]
 httpmock = "0.8.3"
